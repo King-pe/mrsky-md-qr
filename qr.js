@@ -1,29 +1,24 @@
-const PastebinAPI = require('pastebin-js'),
-pastebin = new PastebinAPI('EMWTMkQAVfJa9kM-MRUrxd5Oku1U7pgL')
-const {makeid} = require('./id');
+const { makeid } = require('./id');
 const QRCode = require('qrcode');
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
-let router = express.Router()
+const fs = require('fs-extra');
+let router = express.Router();
 const pino = require("pino");
 const {
-	default: Venocyber_Tech,
-	useMultiFileAuthState,
-	jidNormalizedUser,
-	Browsers,
-	delay,
-	makeInMemoryStore,
+    default: makeWASocket,
+    useMultiFileAuthState,
+    delay,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    Browsers
 } = require("@whiskeysockets/baileys");
 
 function removeFile(FilePath) {
-	if (!fs.existsSync(FilePath)) return false;
-	fs.rmSync(FilePath, {
-		recursive: true,
-		force: true
-	})
-};
-// Welcome message
+    if (!fs.existsSync(FilePath)) return false;
+    fs.rmSync(FilePath, { recursive: true, force: true });
+}
+
 const WELCOME_MESSAGE = `
 ╔════◇════════════════════════╗
 ║  🎉 *KARIBU MRSKY-MD* 🎉
@@ -48,7 +43,6 @@ const WELCOME_MESSAGE = `
 ╚════════════════════════════╝
 `;
 
-// Session ID header
 const SESSION_ID_HEADER = `
 ╔════◇════════════════════════╗
 ║  🔐 *SESSION_ID YAKO* 🔐
@@ -73,64 +67,83 @@ SESSION_ID YAKO:
 `;
 
 router.get('/', async (req, res) => {
-	const id = makeid();
-	async function VENOCYBER_MD_QR_CODE() {
-		const {
-			state,
-			saveCreds
-		} = await useMultiFileAuthState('./temp/' + id)
-		try {
-			let Qr_Code_By_Venocyber_Tech = Venocyber_Tech({
-				auth: state,
-				printQRInTerminal: false,
-				logger: pino({
-					level: "silent"
-				}),
-				browser: ["MRSKY-MD", "Chrome", "1.0.0"],
-			});
+    const id = makeid();
+    async function startQR() {
+        const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'temp', id));
+        const { version } = await fetchLatestBaileysVersion();
 
-			Qr_Code_By_Venocyber_Tech.ev.on('creds.update', saveCreds)
-			Qr_Code_By_Venocyber_Tech.ev.on("connection.update", async (s) => {
-				const {
-					connection,
-					lastDisconnect,
-					qr
-				} = s;
-				if (qr) await res.end(await QRCode.toBuffer(qr));
-				if (connection == "open") {
-					await delay(8000);
-					let data = fs.readFileSync(__dirname + `/temp/${id}/creds.json`);
-					await delay(800);
-				   let b64data = Buffer.from(data).toString('base64');
-				   let sessionId = "MRSKY;;;" + b64data;
-				   
-				   const user = Qr_Code_By_Venocyber_Tech.user.id;
-				   
-				   // Step 1: Send Welcome Message
-				   await Qr_Code_By_Venocyber_Tech.sendMessage(user, { text: WELCOME_MESSAGE });
-				   await delay(2000);
-				   
-				   // Step 2: Send Session ID with Header
-				   await Qr_Code_By_Venocyber_Tech.sendMessage(user, { text: SESSION_ID_HEADER + sessionId });
+        try {
+            let sock = makeWASocket({
+                auth: state,
+                printQRInTerminal: false,
+                logger: pino({ level: "silent" }),
+                browser: Browsers.macOS("Desktop"), // Most reliable for linking
+                version
+            });
 
-					await delay(5000);
-					await Qr_Code_By_Venocyber_Tech.ws.close();
-					return await removeFile("temp/" + id);
-				} else if (connection === "close" && lastDisconnect && lastDisconnect.error && lastDisconnect.error.output.statusCode != 401) {
-					await delay(10000);
-					VENOCYBER_MD_QR_CODE();
-				}
-			});
-		} catch (err) {
-			if (!res.headersSent) {
-				await res.json({
-					code: "Service is Currently Unavailable"
-				});
-			}
-			console.log(err);
-			await removeFile("temp/" + id);
-		}
-	}
-	return await VENOCYBER_MD_QR_CODE()
+            sock.ev.on('creds.update', saveCreds);
+            sock.ev.on("connection.update", async (update) => {
+                const { connection, lastDisconnect, qr } = update;
+
+                if (qr) {
+                    if (!res.headersSent) {
+                        res.setHeader('Content-Type', 'image/png');
+                        try {
+                            const qrBuffer = await QRCode.toBuffer(qr);
+                            res.end(qrBuffer);
+                        } catch (e) {
+                            console.error("QR Error:", e);
+                        }
+                    }
+                }
+
+                if (connection === "open") {
+                    console.log(`✅ Device Linked: ${sock.user.id}`);
+                    await delay(10000); // Allow time for creds.json to be written
+
+                    try {
+                        const credsFile = path.join(__dirname, 'temp', id, 'creds.json');
+                        if (fs.existsSync(credsFile)) {
+                            const credsData = fs.readFileSync(credsFile);
+                            const b64 = Buffer.from(credsData).toString('base64');
+                            const sessionId = "MRSKY;;;" + b64;
+
+                            const userJid = sock.user.id;
+                            
+                            // Send Messages to user inbox
+                            await sock.sendMessage(userJid, { text: WELCOME_MESSAGE });
+                            await delay(2000);
+                            await sock.sendMessage(userJid, { text: SESSION_ID_HEADER + sessionId });
+
+                            console.log("✅ Session ID sent to inbox");
+                        }
+                    } catch (err) {
+                        console.error("Session Generation Error:", err);
+                    }
+
+                    await delay(5000);
+                    sock.ws.close();
+                    removeFile(path.join(__dirname, 'temp', id));
+                }
+
+                if (connection === "close") {
+                    const reason = lastDisconnect?.error?.output?.statusCode;
+                    if (reason !== DisconnectReason.loggedOut && reason !== 401) {
+                        // Attempt reconnect if not a logout
+                        // startQR(); // Optional: might cause loop if not careful
+                    } else {
+                        removeFile(path.join(__dirname, 'temp', id));
+                    }
+                }
+            });
+
+        } catch (err) {
+            console.error("Bot Error:", err);
+            if (!res.headersSent) res.status(500).send("Error connecting");
+            removeFile(path.join(__dirname, 'temp', id));
+        }
+    }
+    startQR();
 });
-module.exports = router
+
+module.exports = router;

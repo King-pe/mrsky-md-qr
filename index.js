@@ -1,26 +1,41 @@
 const express = require('express');
 const app = express();
-__path = process.cwd()
+const path = require('path');
 const bodyParser = require("body-parser");
+const fs = require('fs-extra');
+
 const PORT = process.env.PORT || 8000;
-let server = require('./qr'),
-    code = require('./pair');
-require('events').EventEmitter.defaultMaxListeners = 500;
-app.use('/qr', server);
-app.use('/code', code);
-app.use('/pair',async (req, res, next) => {
-res.sendFile(__path + '/pair.html')
-})
-app.use('/',async (req, res, next) => {
-res.sendFile(__path + '/main.html')
-})
+
+// Ensure temp directory exists
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+}
+
+// Clear temp on startup
+fs.emptyDirSync(tempDir);
+
+// Routes
+const qrRouter = require('./qr');
+const pairRouter = require('./pair');
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+app.use('/qr', qrRouter);
+app.use('/code', pairRouter);
+
+app.get('/pair', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pair.html'));
+});
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'main.html'));
+});
+
 app.listen(PORT, () => {
-    console.log(`
-Don't Forgot To Give Star
+    console.log(`🚀 MRSKY-MD Server running on http://localhost:${PORT}`);
+    console.log(`Scan QR at http://localhost:${PORT}/qr`);
+});
 
- Server running on http://localhost:` + PORT)
-})
-
-module.exports = app
+module.exports = app;
