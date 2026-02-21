@@ -31,7 +31,7 @@ const WELCOME_MESSAGE = process.env.WELCOME_MESSAGE || `
 ║ Owner: https://wa.me/25567778080
 ║ YouTube: youtube.com/basanzietech
 ║
-╚════════════════════════════╝
+╚════◇════════════════════════╝
 `;
 
 // Session ID message
@@ -53,7 +53,7 @@ const SESSION_ID_MESSAGE = process.env.SESSION_ID_MESSAGE || `
 ║ - .env file: SESSION_ID=...
 ║ - Bot configuration file
 ║
-╚════════════════════════════╝
+╚════◇════════════════════════╝
 
 SESSION_ID YAKO:
 `;
@@ -68,31 +68,27 @@ app.get("/", async (req, res) => {
     const { 
         default: SuhailWASocket, 
         useMultiFileAuthState, 
-        Browsers, 
         delay, 
         DisconnectReason, 
-        fetchLatestBaileysVersion,
-        makeCacheableSignalKeyStore
+        fetchLatestBaileysVersion
     } = Baileys;
 
     let sessionSent = false;
+    let sock = null;
 
     async function startBot() {
-        const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info_baileys'));
-        const { version } = await fetchLatestBaileysVersion();
-        
-        console.log(`Starting WhatsApp connection with version ${version.join('.')}`);
-
         try {
-            const sock = SuhailWASocket({
+            const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info_baileys'));
+            const { version } = await fetchLatestBaileysVersion();
+            
+            console.log(`Starting WhatsApp connection with version ${version.join('.')}`);
+
+            sock = SuhailWASocket({
                 version,
                 printQRInTerminal: false,
                 logger: pino({ level: "silent" }),
                 browser: ["MRSKY-MD", "Chrome", "1.0.0"],
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-                },
+                auth: state,
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 0,
                 keepAliveIntervalMs: 10000,
@@ -103,6 +99,7 @@ app.get("/", async (req, res) => {
                 markOnlineOnConnect: true
             });
 
+            // Handle QR code display
             sock.ev.on("connection.update", async (update) => {
                 const { connection, lastDisconnect, qr } = update;
                 
@@ -121,40 +118,53 @@ app.get("/", async (req, res) => {
 
                 // Handle successful connection
                 if (connection === "open") {
-                    console.log("Connection opened! Sending session...");
+                    console.log("✅ Connection opened! Waiting for session to stabilize...");
                     
                     if (!sessionSent) {
                         sessionSent = true;
                         
                         try {
-                            await delay(5000); // Wait for session to stabilize
+                            // Wait for session to fully stabilize
+                            await delay(8000);
+                            
                             const user = sock.user.id;
-                            const credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
+                            console.log(`👤 Connected user: ${user}`);
+                            
+                            const credsPath = path.join(__dirname, 'auth_info_baileys');
+                            const credsFile = path.join(credsPath, 'creds.json');
 
+                            // Check if creds file exists
                             if (fs.existsSync(credsFile)) {
+                                console.log("📄 Reading credentials file...");
                                 const creds = fs.readFileSync(credsFile);
                                 const sessionId = "MRSKY;;;" + Buffer.from(creds).toString('base64');
                                 
-                                console.log(`Session ID generated. Sending to: ${user}`);
+                                console.log(`🔐 Session ID generated (length: ${sessionId.length})`);
 
-                                // Step 1: Send Welcome Message
-                                await sock.sendMessage(user, { text: WELCOME_MESSAGE });
-                                await delay(2000);
-                                
-                                // Step 2: Send Session ID Message
-                                await sock.sendMessage(user, { text: SESSION_ID_MESSAGE + sessionId });
-                                
-                                console.log("Messages sent successfully to user inbox");
-                                
-                                // Clean up and close connection after sending
-                                await delay(5000);
-                                sock.logout();
-                                fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys'));
+                                try {
+                                    // Send Welcome Message
+                                    console.log("📤 Sending welcome message...");
+                                    await sock.sendMessage(user, { text: WELCOME_MESSAGE });
+                                    console.log("✅ Welcome message sent");
+                                    
+                                    // Wait a bit
+                                    await delay(3000);
+                                    
+                                    // Send Session ID with message
+                                    console.log("📤 Sending session ID message...");
+                                    const fullMessage = SESSION_ID_MESSAGE + sessionId;
+                                    await sock.sendMessage(user, { text: fullMessage });
+                                    console.log("✅ Session ID message sent successfully");
+                                    
+                                } catch (sendError) {
+                                    console.error("❌ Error sending messages:", sendError.message);
+                                }
                             } else {
-                                console.error("Credentials file not found!");
+                                console.error("❌ Credentials file not found at:", credsFile);
+                                console.log("📁 Available files:", fs.readdirSync(credsPath));
                             }
                         } catch (err) {
-                            console.error("Error processing session:", err);
+                            console.error("❌ Error processing session:", err.message);
                         }
                     }
                 }
@@ -162,22 +172,41 @@ app.get("/", async (req, res) => {
                 // Handle disconnection
                 if (connection === "close") {
                     const reason = new Boom(lastDisconnect?.error)?.output.statusCode;
-                    console.log("Connection closed. Reason code:", reason);
+                    console.log("⚠️ Connection closed. Reason code:", reason);
 
-                    if (reason === DisconnectReason.loggedOut) {
-                        console.log("Device logged out. Session cleared.");
-                        try { fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys')); } catch(e) {}
-                    } else if (reason !== DisconnectReason.connectionClosed) {
-                        // Reconnect for other reasons
+                    if (reason === DisconnectReason.restartRequired) {
+                        console.log("🔄 Restart required, reconnecting...");
+                        sessionSent = false;
+                        await delay(3000);
                         startBot().catch(err => console.error("Reconnection Error:", err));
+                    } else if (reason === DisconnectReason.connectionLost) {
+                        console.log("🔄 Connection lost, attempting to reconnect...");
+                        sessionSent = false;
+                        await delay(3000);
+                        startBot().catch(err => console.error("Reconnection Error:", err));
+                    } else if (reason === DisconnectReason.connectionClosed) {
+                        console.log("⏸️ Connection closed, will reconnect on next request...");
+                    } else if (reason === DisconnectReason.timedOut) {
+                        console.log("🔄 Connection timed out, reconnecting...");
+                        sessionSent = false;
+                        await delay(3000);
+                        startBot().catch(err => console.error("Reconnection Error:", err));
+                    } else if (reason === DisconnectReason.loggedOut) {
+                        console.log("🚪 Device logged out. Session cleared.");
+                        try { 
+                            fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys')); 
+                        } catch(e) {}
+                    } else {
+                        console.log(`Connection closed with reason: ${reason}`);
                     }
                 }
             });
 
+            // Handle credential updates
             sock.ev.on('creds.update', saveCreds);
 
         } catch (err) {
-            console.error("Error in startBot:", err);
+            console.error("❌ Error in startBot:", err.message);
             if (!res.headersSent) {
                 res.status(500).send("Connection error. Please try again.");
             }
@@ -185,8 +214,8 @@ app.get("/", async (req, res) => {
     }
 
     startBot().catch(err => {
-        console.error("Global startBot error:", err);
+        console.error("❌ Global startBot error:", err.message);
     });
 });
 
-app.listen(PORT, () => console.log(`MRSKY-MD QR Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 MRSKY-MD QR Server running on port ${PORT}`));
