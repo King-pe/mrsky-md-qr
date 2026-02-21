@@ -22,7 +22,7 @@ const MESSAGE = process.env.MESSAGE || `
 ╚════════════════════════╝
 `;
 
-// Clear auth directory on startup to avoid session conflicts
+// Clear auth directory on startup
 if (fs.existsSync('./auth_info_baileys')) {
     fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys'));
 }
@@ -38,6 +38,8 @@ app.get("/", async (req, res) => {
         fetchLatestBaileysVersion
     } = Baileys;
 
+    let sessionSent = false; // Track if session has been sent
+
     async function startBot() {
         const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info_baileys'));
         const { version } = await fetchLatestBaileysVersion();
@@ -49,7 +51,6 @@ app.get("/", async (req, res) => {
                 version,
                 printQRInTerminal: false,
                 logger: pino({ level: "silent" }),
-                // CUSTOM BROWSER NAME: This helps WhatsApp recognize the device properly and stay linked
                 browser: ["PETER-MD", "Chrome", "1.0.0"],
                 auth: state,
                 connectTimeoutMs: 60000,
@@ -59,14 +60,13 @@ app.get("/", async (req, res) => {
                 fireInitQueries: true,
                 generateHighQualityLinkPreview: false,
                 syncFullHistory: false,
-                markOnlineOnConnect: true,
-                // Additional options for stability
-                getMessage: async (key) => { return { conversation: 'PETER-MD-BOT' } }
+                markOnlineOnConnect: true
             });
 
             sock.ev.on("connection.update", async (update) => {
                 const { connection, lastDisconnect, qr } = update;
                 
+                // Send QR code
                 if (qr) {
                     if (!res.headersSent) {
                         res.setHeader('Content-Type', 'image/png');
@@ -79,55 +79,92 @@ app.get("/", async (req, res) => {
                     }
                 }
 
+                // Handle successful connection
                 if (connection === "open") {
-                    await delay(5000); // Wait for connection to fully stabilize
-                    const user = sock.user.id;
-                    const credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
+                    console.log("Connection opened! Waiting for session to stabilize...");
+                    
+                    // Wait longer for session to fully stabilize
+                    await delay(8000);
+                    
+                    // Only send session once
+                    if (!sessionSent) {
+                        sessionSent = true;
+                        
+                        try {
+                            const user = sock.user.id;
+                            const credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
 
-                    if (fs.existsSync(credsFile)) {
-                        const creds = fs.readFileSync(credsFile);
-                        // FORMAT: PETER;;;[BASE64_CREDS]
-                        // This matches the format expected by PETER-MD's MakeSession function
-                        const sessionId = "PETER;;;" + Buffer.from(creds).toString('base64');
-                        
-                        console.log(`Session ID generated for PETER-MD: ${sessionId}`);
+                            if (fs.existsSync(credsFile)) {
+                                const creds = fs.readFileSync(credsFile);
+                                const sessionId = "PETER;;;" + Buffer.from(creds).toString('base64');
+                                
+                                console.log(`Session ID ready. Sending to user: ${user}`);
 
-                        const sentMsg = await sock.sendMessage(user, { text: sessionId });
-                        await sock.sendMessage(user, { text: MESSAGE }, { quoted: sentMsg });
-                        
-                        await delay(3000);
-                        console.log("Session details sent. Device is now linked safely.");
-                        
-                        // We do NOT logout here. We let the connection stay for a bit to ensure WhatsApp 
-                        // registers the "PETER-MD" browser correctly.
-                        // The user can now close the web page.
+                                // Send Session ID first
+                                try {
+                                    const sentMsg = await sock.sendMessage(user, { 
+                                        text: sessionId 
+                                    });
+                                    console.log("Session ID sent successfully");
+                                    
+                                    // Wait a bit before sending confirmation message
+                                    await delay(2000);
+                                    
+                                    // Send confirmation message
+                                    await sock.sendMessage(user, { 
+                                        text: MESSAGE 
+                                    }, { quoted: sentMsg });
+                                    console.log("Confirmation message sent");
+                                    
+                                } catch (sendError) {
+                                    console.error("Error sending messages:", sendError);
+                                }
+                            } else {
+                                console.error("Credentials file not found!");
+                            }
+                        } catch (err) {
+                            console.error("Error processing session:", err);
+                        }
                     }
                 }
 
+                // Handle disconnection
                 if (connection === "close") {
                     const reason = new Boom(lastDisconnect?.error)?.output.statusCode;
                     console.log("Connection closed. Reason code:", reason);
 
-                    if (reason === DisconnectReason.restartRequired || 
-                        reason === DisconnectReason.connectionLost || 
-                        reason === DisconnectReason.connectionClosed || 
-                        reason === DisconnectReason.timedOut) {
-                        console.log("Attempting to reconnect for stability...");
+                    if (reason === DisconnectReason.restartRequired) {
+                        console.log("Restart required, reconnecting...");
+                        sessionSent = false;
+                        startBot().catch(err => console.error("Reconnection Error:", err));
+                    } else if (reason === DisconnectReason.connectionLost) {
+                        console.log("Connection lost, attempting to reconnect...");
+                        sessionSent = false;
+                        startBot().catch(err => console.error("Reconnection Error:", err));
+                    } else if (reason === DisconnectReason.connectionClosed) {
+                        console.log("Connection closed, will reconnect on next request...");
+                    } else if (reason === DisconnectReason.timedOut) {
+                        console.log("Connection timed out, reconnecting...");
+                        sessionSent = false;
                         startBot().catch(err => console.error("Reconnection Error:", err));
                     } else if (reason === DisconnectReason.loggedOut) {
-                        console.log("Device logged out. You need to scan again.");
-                        // Clear the auth folder so the next request starts fresh
-                        try { fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys')); } catch(e) {}
+                        console.log("Device logged out. Session cleared.");
+                        try { 
+                            fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys')); 
+                        } catch(e) {}
+                    } else {
+                        console.log(`Connection closed with reason: ${reason}`);
                     }
                 }
             });
 
+            // Handle credential updates
             sock.ev.on('creds.update', saveCreds);
 
         } catch (err) {
             console.error("Error in startBot:", err);
             if (!res.headersSent) {
-                res.status(500).send("Connection error occurred. Please refresh.");
+                res.status(500).send("Connection error. Please try again.");
             }
         }
     }
