@@ -2,7 +2,7 @@
 const express = require("express");
 const app = express();
 const pino = require("pino");
-let { toBuffer } = require("qrcode");
+const { toBuffer } = require("qrcode");
 const path = require('path');
 const fs = require("fs-extra");
 const { Boom } = require("@hapi/boom");
@@ -22,12 +22,14 @@ const MESSAGE = process.env.MESSAGE || `
 ╚════════════════════════╝
 `;
 
-// Safely clear auth directory on start to ensure a fresh session generation
+// Clear auth directory on startup
 if (fs.existsSync('./auth_info_baileys')) {
     fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys'));
 }
 
-app.use("/", async (req, res) => {
+app.get("/", async (req, res) => {
+    // Import Baileys
+    const Baileys = require("@whiskeysockets/baileys");
     const { 
         default: SuhailWASocket, 
         useMultiFileAuthState, 
@@ -36,25 +38,24 @@ app.use("/", async (req, res) => {
         DisconnectReason, 
         makeInMemoryStore,
         fetchLatestBaileysVersion
-    } = require("@whiskeysockets/baileys");
+    } = Baileys;
 
-    const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
+    // Fix for potential import issues in different versions
+    const createStore = makeInMemoryStore || Baileys.makeInMemoryStore;
 
-    async function SUHAIL() {
+    async function startBot() {
         const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info_baileys'));
-        const { version, isLatest } = await fetchLatestBaileysVersion();
+        const { version } = await fetchLatestBaileysVersion();
         
-        console.log(`Using Baileys v${version.join('.')}, isLatest: ${isLatest}`);
+        console.log(`Starting WhatsApp connection with version ${version.join('.')}`);
 
         try {
-            let Smd = SuhailWASocket({
+            const sock = SuhailWASocket({
                 version,
                 printQRInTerminal: false,
                 logger: pino({ level: "silent" }),
-                // Using macOS Chrome for better stability and less chance of unlinking
                 browser: Browsers.macOS("Desktop"),
                 auth: state,
-                // Improved connection options
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 0,
                 keepAliveIntervalMs: 10000,
@@ -65,90 +66,76 @@ app.use("/", async (req, res) => {
                 markOnlineOnConnect: true
             });
 
-            // Bind store
-            store.bind(Smd.ev);
+            // Bind store if available
+            if (createStore) {
+                const store = createStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
+                store.bind(sock.ev);
+            }
 
-            Smd.ev.on("connection.update", async (s) => {
-                const { connection, lastDisconnect, qr } = s;
+            sock.ev.on("connection.update", async (update) => {
+                const { connection, lastDisconnect, qr } = update;
                 
                 if (qr) {
                     if (!res.headersSent) {
                         res.setHeader('Content-Type', 'image/png');
-                        res.end(await toBuffer(qr));
+                        try {
+                            const qrBuffer = await toBuffer(qr);
+                            res.end(qrBuffer);
+                        } catch (e) {
+                            console.error("QR Generation Error:", e);
+                        }
                     }
                 }
 
                 if (connection === "open") {
-                    await delay(5000); // Wait for connection to stabilize
-                    let user = Smd.user.id;
+                    await delay(5000);
+                    const user = sock.user.id;
+                    const credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
 
-                    // Read credentials and generate session ID
-                    let credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
                     if (fs.existsSync(credsFile)) {
-                        let CREDS = fs.readFileSync(credsFile);
-                        var Scan_Id = Buffer.from(CREDS).toString('base64');
+                        const creds = fs.readFileSync(credsFile);
+                        const sessionId = Buffer.from(creds).toString('base64');
                         
-                        console.log(`
-====================  SESSION ID  ==========================                   
-SESSION-ID ==> ${Scan_Id}
--------------------   SESSION GENERATED   -----------------------
-`);
+                        console.log(`Session ID generated: ${sessionId}`);
 
-                        // Send Session ID and Message to the user
-                        let msgsss = await Smd.sendMessage(user, { text: Scan_Id });
-                        await Smd.sendMessage(user, { text: MESSAGE }, { quoted: msgsss });
+                        const sentMsg = await sock.sendMessage(user, { text: sessionId });
+                        await sock.sendMessage(user, { text: MESSAGE }, { quoted: sentMsg });
                         
                         await delay(2000);
-                        console.log("Session ID sent successfully. Closing connection...");
-                        
-                        // After sending, we can clean up if this is just a session generator
-                        // But if the user wants "stable" we should ideally keep it or let them know
-                        // For this specific "Web QR" app, the goal is to get the ID.
-                        // However, to satisfy "not unlinking", we ensure the session is valid.
-                        try { 
-                            await Smd.ws.close();
-                        } catch(e) {}
+                        console.log("Session details sent. Closing connection to finalize...");
+                        sock.logout();
                     }
                 }
 
                 if (connection === "close") {
-                    let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
-                    console.log("Connection closed. Reason:", reason);
+                    const reason = new Boom(lastDisconnect?.error)?.output.statusCode;
+                    console.log("Connection closed. Reason code:", reason);
 
-                    if (reason === DisconnectReason.restartRequired) {
-                        console.log("Restart Required, Restarting...");
-                        SUHAIL().catch(err => console.log(err));
-                    } else if (reason === DisconnectReason.connectionLost) {
-                        console.log("Connection Lost from Server, Reconnecting...");
-                        SUHAIL().catch(err => console.log(err));
-                    } else if (reason === DisconnectReason.connectionClosed) {
-                        console.log("Connection closed, Reconnecting...");
-                        SUHAIL().catch(err => console.log(err));
+                    if (reason === DisconnectReason.restartRequired || 
+                        reason === DisconnectReason.connectionLost || 
+                        reason === DisconnectReason.connectionClosed || 
+                        reason === DisconnectReason.timedOut) {
+                        console.log("Attempting to reconnect...");
+                        startBot().catch(err => console.error("Reconnection Error:", err));
                     } else if (reason === DisconnectReason.loggedOut) {
-                        console.log("Device Logged Out, please scan again.");
-                    } else if (reason === DisconnectReason.timedOut) {
-                        console.log("Connection Timed Out, Reconnecting...");
-                        SUHAIL().catch(err => console.log(err));
-                    } else {
-                        console.log(`Connection closed with reason: ${reason}`);
+                        console.log("Device logged out. Session ended.");
                     }
                 }
             });
 
-            // Important: Handle credentials update to keep session alive
-            Smd.ev.on('creds.update', saveCreds);
+            sock.ev.on('creds.update', saveCreds);
 
         } catch (err) {
-            console.log("Error in SUHAIL function:", err);
+            console.error("Error in startBot:", err);
             if (!res.headersSent) {
-                res.status(500).send("Internal Server Error");
+                res.status(500).send("Connection error occurred.");
             }
         }
     }
 
-    SUHAIL().catch(async (err) => {
-        console.log("Global error:", err);
+    startBot().catch(err => {
+        console.error("Global startBot error:", err);
     });
 });
 
-app.listen(PORT, () => console.log(`App listened on port http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
