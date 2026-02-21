@@ -8,18 +8,54 @@ const fs = require("fs-extra");
 const { Boom } = require("@hapi/boom");
 
 const PORT = process.env.PORT || 5000;
-const MESSAGE = process.env.MESSAGE || `
-╔════◇
-║ *『 WAOW YOU CHOOSE PETER-MD 』*
-║ _You complete first step to making Bot._
-╚════════════════════════╝
-╔═════◇
-║  『••• 𝗩𝗶𝘀𝗶𝘁 𝗙𝗼𝗿 𝗛𝗲𝗹𝗽 •••』
-║ *Ytube:* _youtube.com/basanzietech_
-║ *Owner:* _https://wa.me/25567778080_
-║ *Note :*_Don't provide your SESSION_ID to_
-║ _anyone otherwise that can access chats_
-╚════════════════════════╝
+
+// Welcome message that appears first
+const WELCOME_MESSAGE = process.env.WELCOME_MESSAGE || `
+╔════◇════════════════════════╗
+║  🎉 *KARIBU MRSKY-MD* 🎉
+║
+║ _Umefaulu kuscan QR code!_
+║ _Sasa unaweza kuanza kutumia bot._
+║
+║ 📋 *Hatua Inayofuata:*
+║ 1. Nusuru SESSION_ID kutoka ujumbe ujao
+║ 2. Tumia SESSION_ID kwenye bot yako
+║ 3. Jifunze kuhusu amri za bot
+║
+║ ⚠️ *MUHIMU:*
+║ _Usishare SESSION_ID yako na mtu yeyote!_
+║ _Kila mtu anayemiliki SESSION_ID_
+║ _anaweza kufikia ujumbe wako wote._
+║
+║ 📞 *Msaada:*
+║ Owner: https://wa.me/25567778080
+║ YouTube: youtube.com/basanzietech
+║
+╚════════════════════════════╝
+`;
+
+// Session ID message
+const SESSION_ID_MESSAGE = process.env.SESSION_ID_MESSAGE || `
+╔════◇════════════════════════╗
+║  🔐 *SESSION_ID YAKO* 🔐
+║
+║ _Hii ni SESSION_ID yako ya kipekee._
+║ _Tumia kwenye bot configuration._
+║
+║ ⚠️ *ONYO LA USALAMA:*
+║ • Usishare SESSION_ID hii!
+║ • Usiweke kwenye GitHub au mahali ya umma
+║ • Kila mtu anayemiliki hii anaweza kufikia chats
+║
+║ 📌 *Jinsi ya Kutumia:*
+║ Nakili SESSION_ID hii na uweke kwenye:
+║ - Environment variable: SESSION_ID
+║ - .env file: SESSION_ID=...
+║ - Bot configuration file
+║
+╚════════════════════════════╝
+
+SESSION_ID YAKO:
 `;
 
 // Clear auth directory on startup
@@ -51,7 +87,7 @@ app.get("/", async (req, res) => {
                 version,
                 printQRInTerminal: false,
                 logger: pino({ level: "silent" }),
-                browser: ["PETER-MD", "Chrome", "1.0.0"],
+                browser: ["MRSKY-MD", "Chrome", "1.0.0"],
                 auth: state,
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 0,
@@ -96,25 +132,34 @@ app.get("/", async (req, res) => {
 
                             if (fs.existsSync(credsFile)) {
                                 const creds = fs.readFileSync(credsFile);
-                                const sessionId = "PETER;;;" + Buffer.from(creds).toString('base64');
+                                const sessionId = "MRSKY;;;" + Buffer.from(creds).toString('base64');
                                 
                                 console.log(`Session ID ready. Sending to user: ${user}`);
 
-                                // Send Session ID first
                                 try {
-                                    const sentMsg = await sock.sendMessage(user, { 
-                                        text: sessionId 
+                                    // Step 1: Send Welcome Message First
+                                    const welcomeMsg = await sock.sendMessage(user, { 
+                                        text: WELCOME_MESSAGE 
                                     });
-                                    console.log("Session ID sent successfully");
+                                    console.log("Welcome message sent successfully");
                                     
-                                    // Wait a bit before sending confirmation message
+                                    // Wait before sending session info
                                     await delay(2000);
                                     
-                                    // Send confirmation message
-                                    await sock.sendMessage(user, { 
-                                        text: MESSAGE 
-                                    }, { quoted: sentMsg });
-                                    console.log("Confirmation message sent");
+                                    // Step 2: Send Session ID Info Message
+                                    const sessionInfoMsg = await sock.sendMessage(user, { 
+                                        text: SESSION_ID_MESSAGE
+                                    }, { quoted: welcomeMsg });
+                                    console.log("Session ID info message sent");
+                                    
+                                    // Wait before sending actual session ID
+                                    await delay(1500);
+                                    
+                                    // Step 3: Send the actual Session ID
+                                    const sessionMsg = await sock.sendMessage(user, { 
+                                        text: sessionId
+                                    }, { quoted: sessionInfoMsg });
+                                    console.log("Session ID sent successfully");
                                     
                                 } catch (sendError) {
                                     console.error("Error sending messages:", sendError);
@@ -174,4 +219,4 @@ app.get("/", async (req, res) => {
     });
 });
 
-app.listen(PORT, () => console.log(`PETER-MD QR Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`MRSKY-MD QR Server running on port ${PORT}`));
