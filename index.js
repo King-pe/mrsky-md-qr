@@ -10,7 +10,7 @@ const { Boom } = require("@hapi/boom");
 const PORT = process.env.PORT || 5000;
 const MESSAGE = process.env.MESSAGE || `
 ╔════◇
-║ *『 WAOW YOU CHOOSE MRSKY-MD 』*
+║ *『 WAOW YOU CHOOSE PETER-MD 』*
 ║ _You complete first step to making Bot._
 ╚════════════════════════╝
 ╔═════◇
@@ -22,13 +22,12 @@ const MESSAGE = process.env.MESSAGE || `
 ╚════════════════════════╝
 `;
 
-// Clear auth directory on startup
+// Clear auth directory on startup to avoid session conflicts
 if (fs.existsSync('./auth_info_baileys')) {
     fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys'));
 }
 
 app.get("/", async (req, res) => {
-    // Import Baileys
     const Baileys = require("@whiskeysockets/baileys");
     const { 
         default: SuhailWASocket, 
@@ -36,12 +35,8 @@ app.get("/", async (req, res) => {
         Browsers, 
         delay, 
         DisconnectReason, 
-        makeInMemoryStore,
         fetchLatestBaileysVersion
     } = Baileys;
-
-    // Fix for potential import issues in different versions
-    const createStore = makeInMemoryStore || Baileys.makeInMemoryStore;
 
     async function startBot() {
         const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info_baileys'));
@@ -54,7 +49,8 @@ app.get("/", async (req, res) => {
                 version,
                 printQRInTerminal: false,
                 logger: pino({ level: "silent" }),
-                browser: Browsers.macOS("Desktop"),
+                // CUSTOM BROWSER NAME: This helps WhatsApp recognize the device properly and stay linked
+                browser: ["PETER-MD", "Chrome", "1.0.0"],
                 auth: state,
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 0,
@@ -63,14 +59,10 @@ app.get("/", async (req, res) => {
                 fireInitQueries: true,
                 generateHighQualityLinkPreview: false,
                 syncFullHistory: false,
-                markOnlineOnConnect: true
+                markOnlineOnConnect: true,
+                // Additional options for stability
+                getMessage: async (key) => { return { conversation: 'PETER-MD-BOT' } }
             });
-
-            // Bind store if available
-            if (createStore) {
-                const store = createStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
-                store.bind(sock.ev);
-            }
 
             sock.ev.on("connection.update", async (update) => {
                 const { connection, lastDisconnect, qr } = update;
@@ -88,22 +80,27 @@ app.get("/", async (req, res) => {
                 }
 
                 if (connection === "open") {
-                    await delay(5000);
+                    await delay(5000); // Wait for connection to fully stabilize
                     const user = sock.user.id;
                     const credsFile = path.join(__dirname, 'auth_info_baileys', 'creds.json');
 
                     if (fs.existsSync(credsFile)) {
                         const creds = fs.readFileSync(credsFile);
-                        const sessionId = Buffer.from(creds).toString('base64');
+                        // FORMAT: PETER;;;[BASE64_CREDS]
+                        // This matches the format expected by PETER-MD's MakeSession function
+                        const sessionId = "PETER;;;" + Buffer.from(creds).toString('base64');
                         
-                        console.log(`Session ID generated: ${sessionId}`);
+                        console.log(`Session ID generated for PETER-MD: ${sessionId}`);
 
                         const sentMsg = await sock.sendMessage(user, { text: sessionId });
                         await sock.sendMessage(user, { text: MESSAGE }, { quoted: sentMsg });
                         
-                        await delay(2000);
-                        console.log("Session details sent. Closing connection to finalize...");
-                        sock.logout();
+                        await delay(3000);
+                        console.log("Session details sent. Device is now linked safely.");
+                        
+                        // We do NOT logout here. We let the connection stay for a bit to ensure WhatsApp 
+                        // registers the "PETER-MD" browser correctly.
+                        // The user can now close the web page.
                     }
                 }
 
@@ -115,10 +112,12 @@ app.get("/", async (req, res) => {
                         reason === DisconnectReason.connectionLost || 
                         reason === DisconnectReason.connectionClosed || 
                         reason === DisconnectReason.timedOut) {
-                        console.log("Attempting to reconnect...");
+                        console.log("Attempting to reconnect for stability...");
                         startBot().catch(err => console.error("Reconnection Error:", err));
                     } else if (reason === DisconnectReason.loggedOut) {
-                        console.log("Device logged out. Session ended.");
+                        console.log("Device logged out. You need to scan again.");
+                        // Clear the auth folder so the next request starts fresh
+                        try { fs.emptyDirSync(path.join(__dirname, 'auth_info_baileys')); } catch(e) {}
                     }
                 }
             });
@@ -128,7 +127,7 @@ app.get("/", async (req, res) => {
         } catch (err) {
             console.error("Error in startBot:", err);
             if (!res.headersSent) {
-                res.status(500).send("Connection error occurred.");
+                res.status(500).send("Connection error occurred. Please refresh.");
             }
         }
     }
@@ -138,4 +137,4 @@ app.get("/", async (req, res) => {
     });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`PETER-MD QR Server running on port ${PORT}`));
